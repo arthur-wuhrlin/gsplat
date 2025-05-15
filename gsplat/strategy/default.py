@@ -6,6 +6,7 @@ from typing_extensions import Literal
 
 from .base import Strategy
 from .ops import duplicate, remove, reset_opa, split
+from layers.training.LayeredSplats import LayerSplats
 
 
 @dataclass
@@ -262,7 +263,7 @@ class DefaultStrategy(Strategy):
     @torch.no_grad()
     def _grow_gs(
         self,
-        params: Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
+        params: Union[LayerSplats, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
@@ -277,12 +278,18 @@ class DefaultStrategy(Strategy):
             <= self.grow_scale3d * state["scene_scale"]
         )
         is_dupli = is_grad_high & is_small
+
+        if isinstance(params, LayerSplats):
+            is_dupli &= params.mask_frozen_parameters(device)
         n_dupli = is_dupli.sum().item()
 
         is_large = ~is_small
         is_split = is_grad_high & is_large
         if step < self.refine_scale2d_stop_iter:
             is_split |= state["radii"] > self.grow_scale2d
+
+        if isinstance(params, LayerSplats):
+            is_split &= params.mask_frozen_parameters(device)
         n_split = is_split.sum().item()
 
         # first duplicate
@@ -311,7 +318,7 @@ class DefaultStrategy(Strategy):
     @torch.no_grad()
     def _prune_gs(
         self,
-        params: Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
+        params: Union[LayerSplats, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
@@ -332,6 +339,8 @@ class DefaultStrategy(Strategy):
 
             is_prune = is_prune | is_too_big
 
+        if isinstance(params, LayerSplats):
+            is_prune = params.mask_frozen_parameters(is_prune.device) & is_prune
         n_prune = is_prune.sum().item()
         if n_prune > 0:
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
