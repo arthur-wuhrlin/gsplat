@@ -6,7 +6,7 @@ from typing_extensions import Literal
 
 from .base import Strategy
 from .ops import duplicate, remove, reset_opa, split
-from layers.training.LayeredSplats import LayerSplats
+from layers.TrainingSplatsLayer import TrainingSplatsLayer
 
 
 @dataclass
@@ -263,7 +263,7 @@ class DefaultStrategy(Strategy):
     @torch.no_grad()
     def _grow_gs(
         self,
-        params: Union[LayerSplats, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
+        params: Union[TrainingSplatsLayer, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
@@ -279,7 +279,7 @@ class DefaultStrategy(Strategy):
         )
         is_dupli = is_grad_high & is_small
 
-        if isinstance(params, LayerSplats):
+        if isinstance(params, TrainingSplatsLayer):
             is_dupli &= params.mask_frozen_parameters(device)
         n_dupli = is_dupli.sum().item()
 
@@ -288,7 +288,7 @@ class DefaultStrategy(Strategy):
         if step < self.refine_scale2d_stop_iter:
             is_split |= state["radii"] > self.grow_scale2d
 
-        if isinstance(params, LayerSplats):
+        if isinstance(params, TrainingSplatsLayer):
             is_split &= params.mask_frozen_parameters(device)
         n_split = is_split.sum().item()
 
@@ -318,7 +318,7 @@ class DefaultStrategy(Strategy):
     @torch.no_grad()
     def _prune_gs(
         self,
-        params: Union[LayerSplats, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
+        params: Union[TrainingSplatsLayer, Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
@@ -337,10 +337,17 @@ class DefaultStrategy(Strategy):
             if step < self.refine_scale2d_stop_iter:
                 is_too_big |= state["radii"] > self.prune_scale2d
 
+            # Filter out frozen parameters : they are not splitted in half and hence don't need to be cleared.
+            if isinstance(params, TrainingSplatsLayer):
+                is_too_big = params.mask_frozen_parameters(is_too_big.device) & is_too_big
+
             is_prune = is_prune | is_too_big
 
-        if isinstance(params, LayerSplats):
-            is_prune = params.mask_frozen_parameters(is_prune.device) & is_prune
+        is_prune_frozen = is_prune[:params.frozen_params_idx]
+        n_prune_frozen = is_prune_frozen.sum().item()
+        if isinstance(params, TrainingSplatsLayer) and n_prune_frozen > 0:
+            params.update_frozen_parameters(is_prune_frozen)
+
         n_prune = is_prune.sum().item()
         if n_prune > 0:
             remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
